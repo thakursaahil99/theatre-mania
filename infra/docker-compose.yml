@@ -1,0 +1,132 @@
+# Full Theatre Mania stack. Self-contained: code and config are baked into images, so it needs
+# no host file sharing and behaves like production.
+#
+#   cp backend/.env.example backend/.env
+#   docker compose -f infra/docker-compose.yml up -d --build
+#
+# Hot-reload development (bind-mounts backend/ and frontend/ source):
+#   docker compose -f infra/docker-compose.yml -f infra/docker-compose.dev.yml up -d --build
+#
+# App:      http://localhost:3000   (Next.js; proxies /api/v1 → backend)
+# Edge:     http://localhost:8080   (nginx: app + signed-segment "CDN" at /media)
+# API docs: http://localhost:8000/api/v1/docs
+# Storage:  http://localhost:9000   (S3 API, SeaweedFS; key/secret minioadmin / minioadmin)
+# Host ports are overridable via infra/.env (see infra/.env.example) if they clash locally.
+
+name: cineverse
+
+x-backend-image: &backend-image
+  image: cineverse-backend
+  build:
+    context: ../backend
+    args:
+      INSTALL_DEV: "true"
+  env_file: ../backend/.env
+  environment:
+    DATABASE_URL: postgresql+asyncpg://cineverse:cineverse@postgres:5432/cineverse
+    REDIS_URL: redis://redis:6379/0
+    S3_ENDPOINT_URL: http://storage:8333
+    S3_PUBLIC_ENDPOINT_URL: http://localhost:${STORAGE_PORT:-9000}
+
+x-backend: &backend
+  <<: *backend-image
+  depends_on:
+    postgres: { condition: service_healthy }
+    redis: { condition: service_healthy }
+    storage-init: { condition: service_completed_successfully }
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: cineverse
+      POSTGRES_PASSWORD: cineverse
+      POSTGRES_DB: cineverse
+    ports: ["${POSTGRES_PORT:-5432}:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cineverse"]
+      interval: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "allkeys-lru"]
+    ports: ["${REDIS_PORT:-6379}:6379"]
+    volumes: [redisdata:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 10
+
+  # S3-compatible object storage for local dev (SeaweedFS). Production uses Cloudflare R2.
+  # Credentials are in infra/seaweedfs/s3.json; anonymous access is denied, so presigned
+  # URLs are genuinely enforced locally.
+  storage:
+    image: cineverse-storage
+    build: ./seaweedfs
+    command: server -dir=/data -s3 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json -volume.max=0
+    ports: ["${STORAGE_PORT:-9000}:8333"]
+    volumes: [storagedata:/data]
+
+  # Creates the bucket (idempotent, retries until storage is up), then exits.
+  storage-init:
+    <<: *backend-image
+    command: python -m scripts.init_storage
+    depends_on: [storage]
+    restart: "no"
+
+  backend:
+    <<: *backend
+    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips='*'"
+    ports: ["${API_PORT:-8000}:8000"]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/healthz"]
+      interval: 10s
+      retries: 12
+
+  worker:
+    <<: *backend
+    command: celery -A app.workers.celery_app worker -Q transcode,default --concurrency 2 --loglevel info
+    volumes: [transcode:/tmp/cineverse]
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.workers.celery_app inspect ping -d celery@$$HOSTNAME --timeout 10"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+      start_period: 30s
+
+  beat:
+    <<: *backend
+    command: celery -A app.workers.celery_app beat --loglevel info --schedule /tmp/celerybeat-schedule
+    healthcheck:
+      disable: true
+
+  frontend:
+    image: cineverse-frontend
+    build:
+      context: ../frontend
+      args:
+        API_INTERNAL_URL: http://backend:8000
+        NEXT_PUBLIC_SITE_URL: http://localhost:${FRONTEND_PORT:-3000}
+    environment:
+      API_INTERNAL_URL: http://backend:8000
+    ports: ["${FRONTEND_PORT:-3000}:3000"]
+    depends_on:
+      backend: { condition: service_healthy }
+    restart: unless-stopped
+
+  nginx:
+    image: cineverse-edge
+    build: ./nginx
+    env_file: ../backend/.env
+    ports: ["${EDGE_PORT:-8080}:80"]
+    depends_on: [frontend, backend, storage]
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:
+  storagedata:
+  transcode:

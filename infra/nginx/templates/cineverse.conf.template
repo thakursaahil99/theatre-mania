@@ -1,0 +1,81 @@
+# Rendered by the nginx image's envsubst entrypoint into /etc/nginx/conf.d/ (http context).
+# Only variables present in the environment are substituted (${CDN_SIGNING_SECRET},
+# ${S3_BUCKET}); nginx runtime variables such as $uri are left untouched.
+
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+upstream cv_frontend { server frontend:3000; keepalive 16; }
+upstream cv_api      { server backend:8000;  keepalive 16; }
+upstream cv_storage  { server storage:8333;  keepalive 32; }
+
+# Edge cache for immutable HLS segments (keyed WITHOUT the signature query string, so
+# every viewer's differently-signed URL hits the same cached object).
+proxy_cache_path /var/cache/nginx/hls levels=1:2 keys_zone=hls:64m max_size=10g inactive=7d use_temp_path=off;
+
+limit_req_zone $binary_remote_addr zone=cv_api:10m rate=30r/s;
+
+server {
+    listen 80;
+    server_name _;
+    server_tokens off;
+    client_max_body_size 10m;
+
+    gzip on;
+    gzip_types text/css application/javascript application/json application/vnd.apple.mpegurl text/vtt image/svg+xml;
+    gzip_min_length 1024;
+
+    add_header X-Content-Type-Options nosniff always;
+    add_header Referrer-Policy strict-origin-when-cross-origin always;
+
+    # ---- API (direct, skipping the Next.js hop) ----
+    location /api/ {
+        limit_req zone=cv_api burst=60 nodelay;
+        proxy_pass http://cv_api;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 60s;
+    }
+
+    # ---- Signed HLS segments (backend STREAM_SIGNING_MODE=cdn, CDN_BASE_URL=http://localhost:8080/media) ----
+    # The backend signs md5 = base64url(md5("{expires}{object_path} {secret}")).
+    location ~ ^/media(?<object>/hls/.+)$ {
+        secure_link $arg_md5,$arg_expires;
+        secure_link_md5 "$secure_link_expires$object ${CDN_SIGNING_SECRET}";
+        if ($secure_link = "")  { return 403; }  # bad / missing signature → hotlink blocked
+        if ($secure_link = "0") { return 410; }  # signature expired
+
+        add_header Access-Control-Allow-Origin "*" always;
+        add_header Cache-Control "public, max-age=31536000, immutable" always;
+
+        proxy_cache hls;
+        proxy_cache_key $object;
+        proxy_cache_valid 200 7d;
+        proxy_cache_lock on;
+        proxy_ignore_headers Set-Cookie;
+        proxy_hide_header Set-Cookie;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host storage:8333;
+        proxy_pass http://cv_storage/${S3_BUCKET}$object;
+    }
+
+    # ---- Frontend (Next.js) ----
+    location / {
+        proxy_pass http://cv_frontend;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location = /healthz { access_log off; return 200 "ok\n"; }
+}

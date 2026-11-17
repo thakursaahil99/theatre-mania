@@ -1,0 +1,28 @@
+# env
+.env
+.env.local
+backend/.env
+
+# python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.db
+
+# node / next
+node_modules/
+.next/
+frontend/next-env.d.ts
+*.tsbuildinfo
+playwright-report/
+test-results/
+infra/.env
+
+# native dev (npm run setup)
+backend/.venv/
+backend/.tools/
+backend/data/
+# Celery filesystem-broker runtime state (native mode)
+backend/control/

@@ -1,0 +1,23 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+gunicorn==23.0.0
+SQLAlchemy[asyncio]==2.0.36
+asyncpg==0.30.0
+psycopg[binary]==3.2.3
+alembic==1.14.0
+pydantic==2.10.4
+pydantic-settings==2.7.0
+email-validator==2.2.0
+PyJWT==2.10.1
+argon2-cffi==23.1.0
+redis==6.4.0
+celery[redis]==5.6.3
+# Pinned explicitly: unpinned kombu upgrades have broken the redis transport before.
+kombu==5.7.0
+billiard==4.3.2
+vine==5.1.0
+# kombu's filesystem transport (Celery broker in native/no-Redis mode) needs pywin32 on Windows.
+pywin32==310; sys_platform == "win32"
+boto3==1.35.90
+httpx==0.28.1
+python-multipart==0.0.20

@@ -1,0 +1,19 @@
+{
+  "name": "theatre-mania",
+  "private": true,
+  "description": "Theatre Mania monorepo: native (no-Docker) dev scripts. See README.md.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "setup": "node scripts/setup.mjs",
+    "dev": "node scripts/dev.mjs",
+    "seed": "node scripts/backend.mjs -m scripts.seed_public_domain",
+    "import:archive": "node scripts/backend.mjs -m scripts.import_archive",
+    "import:bollywood": "node scripts/backend.mjs -m scripts.import_wikidata",
+    "test": "node scripts/backend.mjs -m pytest -q && npm --prefix frontend run typecheck",
+    "test:backend": "node scripts/backend.mjs -m pytest -q",
+    "test:e2e": "npm --prefix frontend run test:e2e"
+  }
+}

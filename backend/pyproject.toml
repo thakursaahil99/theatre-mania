@@ -1,0 +1,25 @@
+[project]
+name = "theatre-mania-backend"
+version = "1.0.0"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "S", "ASYNC"]
+# E501: long lines are left to the formatter. S603/S607: ffmpeg is invoked with arg lists, never a shell.
+ignore = ["S101", "B008", "S603", "S607", "S311", "E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S105", "S106", "S107"]
+"app/core/config.py" = ["S105", "S108"]  # local-dev defaults, overridden via env in prod
+"app/api/v1/auth.py" = ["S105"]  # OAuth endpoint URLs, not secrets
+"app/main.py" = ["S110"]  # health check reports failures via its payload
